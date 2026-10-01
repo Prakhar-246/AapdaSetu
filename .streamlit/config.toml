@@ -1,0 +1,15 @@
+[theme]
+base = "dark"
+primaryColor = "#EF4444"
+backgroundColor = "#0d1321"
+secondaryBackgroundColor = "#1a2332"
+textColor = "#e2e8f0"
+font = "sans serif"
+
+[server]
+maxUploadSize = 50
+headless = true
+runOnSave = true
+
+[logger]
+level = "warning"
