@@ -2,6 +2,12 @@
 """Minimal test of imports and compilation."""
 
 import sys
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
 try:
     # Test imports
@@ -13,7 +19,7 @@ try:
     print("Packages OK")
     
     # Test parse
-    with open('app.py', 'r') as f:
+    with open('app.py', 'r', encoding='utf-8') as f:
         code = f.read()
     compile(code, 'app.py', 'exec')
     print("Syntax OK")

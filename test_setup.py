@@ -2,6 +2,12 @@
 """Quick test to verify model and data setup."""
 
 import sys
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 sys.path.insert(0, 'Notebook')
 
 import joblib

@@ -274,6 +274,28 @@ def load_model():
 # HELPER UTILITIES
 # ═══════════════════════════════════════════════════════════════
 
+def create_scatter_map(*args, **kwargs):
+    """Compatibility wrapper for Plotly 6/7 (scatter_map) and Plotly <6 (scatter_mapbox)."""
+    if hasattr(px, "scatter_map"):
+        if "mapbox_style" in kwargs:
+            kwargs["map_style"] = kwargs.pop("mapbox_style")
+        return px.scatter_map(*args, **kwargs)
+    return px.scatter_mapbox(*args, **kwargs)
+
+
+def style_priority_table(dataframe, display_cols):
+    """Safely style dataframe priority_level column across pandas versions (pandas 2/3 compatible)."""
+    styler = dataframe[display_cols].style
+    styler_map = getattr(styler, "map", getattr(styler, "applymap", None))
+    if styler_map is not None:
+        return styler_map(
+            lambda v: f"color: {PRIORITY_COLORS.get(v, '#e2e8f0')}; font-weight: 600"
+            if v in PRIORITY_COLORS else "",
+            subset=["priority_level"] if "priority_level" in display_cols else []
+        )
+    return styler
+
+
 def priority_badge_html(level: str) -> str:
     cls = f"badge-{level.lower()}" if level in PRIORITY_COLORS else "badge-low"
     emoji = PRIORITY_EMOJI.get(level, "⚪")
@@ -435,11 +457,7 @@ def render_command_center(df, filtered_df, model):
     display_cols = [c for c in display_cols if c in table_df.columns]
 
     st.dataframe(
-        table_df[display_cols].style.applymap(
-            lambda v: f"color: {PRIORITY_COLORS.get(v, '#e2e8f0')}; font-weight: 600"
-            if v in PRIORITY_COLORS else "",
-            subset=["priority_level"] if "priority_level" in display_cols else []
-        ),
+        style_priority_table(table_df, display_cols),
         use_container_width=True,
         height=420,
     )
@@ -539,7 +557,7 @@ def render_incident_map(df, filtered_df):
     # Clamp marker size
     map_df["marker_size"] = np.clip(map_df["people_affected"] / map_df["people_affected"].max() * 35, 5, 35)
 
-    fig = px.scatter_mapbox(
+    fig = create_scatter_map(
         map_df,
         lat="latitude",
         lon="longitude",
@@ -564,17 +582,18 @@ def render_incident_map(df, filtered_df):
         center={"lat": 22.5, "lon": 82.0},
         height=650,
     )
-    fig.update_layout(
+    map_layout = {
         **PLOTLY_LAYOUT,
-        margin=dict(l=0, r=0, t=0, b=0),
-        legend=dict(
+        "margin": dict(l=0, r=0, t=0, b=0),
+        "legend": dict(
             title="Priority Level",
             bgcolor="rgba(17,24,39,0.85)",
             bordercolor="#1e3a5f",
             borderwidth=1,
             yanchor="top", y=0.98, xanchor="left", x=0.01,
         ),
-    )
+    }
+    fig.update_layout(**map_layout)
     st.plotly_chart(fig, use_container_width=True)
 
     # Summary by state
@@ -743,11 +762,7 @@ def render_resource_pressure(df, filtered_df):
     disp_cols = [c for c in disp_cols if c in constrained.columns]
 
     st.dataframe(
-        constrained[disp_cols].style.applymap(
-            lambda v: f"color: {PRIORITY_COLORS.get(v, '#e2e8f0')}; font-weight: 600"
-            if v in PRIORITY_COLORS else "",
-            subset=["priority_level"] if "priority_level" in disp_cols else []
-        ),
+        style_priority_table(constrained, disp_cols),
         use_container_width=True,
         height=500,
     )
@@ -769,11 +784,17 @@ def render_ai_prediction(model, df):
     else:
         pf_row = None
 
-    def _default(col, fallback=0):
+    def _default(col, fallback=0, min_val=None, max_val=None):
         if pf_row is not None and col in pf_row.index:
             v = pf_row[col]
-            return v if pd.notna(v) else fallback
-        return fallback
+            val = v if pd.notna(v) else fallback
+        else:
+            val = fallback
+        if min_val is not None and isinstance(val, (int, float)):
+            val = max(min_val, val)
+        if max_val is not None and isinstance(val, (int, float)):
+            val = min(max_val, val)
+        return val
 
     with st.form("prediction_form"):
         st.markdown("##### 📍 Location & Disaster")
@@ -795,59 +816,59 @@ def render_ai_prediction(model, df):
         st.markdown("##### 👥 Human Impact")
         h1, h2, h3, h4 = st.columns(4)
         with h1:
-            population     = st.number_input("Population", 1000, 10_000_000, int(_default("population", 500000)), step=10000)
-            people_affected = st.number_input("People Affected", 0, 10_000_000, int(_default("people_affected", 5000)), step=500)
+            population     = st.number_input("Population", 1000, 50_000_000, int(_default("population", 500000, 1000, 50_000_000)), step=10000)
+            people_affected = st.number_input("People Affected", 0, 50_000_000, int(_default("people_affected", 5000, 0, 50_000_000)), step=500)
         with h2:
-            deaths          = st.number_input("Deaths", 0, 100_000, int(_default("deaths", 10)), step=1)
-            injured         = st.number_input("Injured", 0, 500_000, int(_default("injured", 100)), step=10)
+            deaths          = st.number_input("Deaths", 0, 1_000_000, int(_default("deaths", 10, 0, 1_000_000)), step=1)
+            injured         = st.number_input("Injured", 0, 1_000_000, int(_default("injured", 100, 0, 1_000_000)), step=10)
         with h3:
-            critical_patients = st.number_input("Critical Patients", 0, 100_000, int(_default("critical_patients", 20)), step=5)
-            children_affected = st.number_input("Children Affected", 0, 1_000_000, int(_default("children_affected", 500)), step=50)
+            critical_patients = st.number_input("Critical Patients", 0, 500_000, int(_default("critical_patients", 20, 0, 500_000)), step=5)
+            children_affected = st.number_input("Children Affected", 0, 5_000_000, int(_default("children_affected", 500, 0, 5_000_000)), step=50)
         with h4:
-            elderly_affected  = st.number_input("Elderly Affected", 0, 1_000_000, int(_default("elderly_affected", 300)), step=50)
+            elderly_affected  = st.number_input("Elderly Affected", 0, 5_000_000, int(_default("elderly_affected", 300, 0, 5_000_000)), step=50)
 
         st.markdown("##### 🏥 Infrastructure & Resources")
         i1, i2, i3 = st.columns(3)
         with i1:
-            hospital_count = st.number_input("Hospital Count", 0, 500, int(_default("hospital_count", 10)), step=1)
-            ambulance_count = st.number_input("Ambulance Count (total)", 0, 500, int(_default("ambulance_count", 20)), step=1)
-            available_ambulances = st.number_input("Available Ambulances", 0, 500, int(_default("available_ambulances", 15)), step=1)
+            hospital_count = st.number_input("Hospital Count", 0, 5000, int(_default("hospital_count", 10, 0, 5000)), step=1)
+            ambulance_count = st.number_input("Ambulance Count (total)", 0, 10_000, int(_default("ambulance_count", 20, 0, 10_000)), step=1)
+            available_ambulances = st.number_input("Available Ambulances", 0, 10_000, int(_default("available_ambulances", 15, 0, 10_000)), step=1)
         with i2:
-            rescue_team_count = st.number_input("Rescue Team Count (total)", 0, 200, int(_default("rescue_team_count", 5)), step=1)
-            available_rescue_teams = st.number_input("Available Rescue Teams", 0, 200, int(_default("available_rescue_teams", 3)), step=1)
-            hospital_capacity = st.number_input("Hospital Capacity", 0, 50_000, int(_default("hospital_capacity", 500)), step=50)
+            rescue_team_count = st.number_input("Rescue Team Count (total)", 0, 2000, int(_default("rescue_team_count", 5, 0, 2000)), step=1)
+            available_rescue_teams = st.number_input("Available Rescue Teams", 0, 2000, int(_default("available_rescue_teams", 3, 0, 2000)), step=1)
+            hospital_capacity = st.number_input("Hospital Capacity", 0, 200_000, int(_default("hospital_capacity", 500, 0, 200_000)), step=50)
         with i3:
-            shelter_capacity = st.number_input("Shelter Capacity", 0, 1_000_000, int(_default("shelter_capacity", 10000)), step=500)
-            available_shelter_capacity = st.number_input("Available Shelter Capacity", 0, 1_000_000, int(_default("available_shelter_capacity", 8000)), step=500)
-            medical_supply = st.number_input("Medical Supply", 0, 100_000, int(_default("medical_supply", 1000)), step=100)
+            shelter_capacity = st.number_input("Shelter Capacity", 0, 5_000_000, int(_default("shelter_capacity", 10000, 0, 5_000_000)), step=500)
+            available_shelter_capacity = st.number_input("Available Shelter Capacity", 0, 5_000_000, int(_default("available_shelter_capacity", 8000, 0, 5_000_000)), step=500)
+            medical_supply = st.number_input("Medical Supply", 0, 500_000, int(_default("medical_supply", 1000, 0, 500_000)), step=100)
 
         st.markdown("##### 📦 Resource Demand")
         d1, d2, d3, d4 = st.columns(4)
-        with d1: ambulance_demand = st.number_input("Ambulance Demand", 0, 500, int(_default("ambulance_demand", 5)), step=1)
-        with d2: rescue_team_demand = st.number_input("Rescue Team Demand", 0, 200, int(_default("rescue_team_demand", 3)), step=1)
-        with d3: shelter_demand = st.number_input("Shelter Demand", 0, 1_000_000, int(_default("shelter_demand", 3000)), step=500)
-        with d4: medical_supply_demand = st.number_input("Medical Supply Demand", 0, 100_000, int(_default("medical_supply_demand", 500)), step=50)
+        with d1: ambulance_demand = st.number_input("Ambulance Demand", 0, 50_000, int(_default("ambulance_demand", 5, 0, 50_000)), step=1)
+        with d2: rescue_team_demand = st.number_input("Rescue Team Demand", 0, 10_000, int(_default("rescue_team_demand", 3, 0, 10_000)), step=1)
+        with d3: shelter_demand = st.number_input("Shelter Demand", 0, 10_000_000, int(_default("shelter_demand", 3000, 0, 10_000_000)), step=500)
+        with d4: medical_supply_demand = st.number_input("Medical Supply Demand", 0, 5_000_000, int(_default("medical_supply_demand", 500, 0, 5_000_000)), step=50)
 
         with st.expander("🏘️ Area Demographics (advanced)"):
             a1, a2, a3 = st.columns(3)
             with a1:
-                households = st.number_input("Households", 0, 5_000_000, int(_default("households", 100000)), step=5000)
-                male_population = st.number_input("Male Population", 0, 10_000_000, int(_default("male_population", 250000)), step=10000)
-                female_population = st.number_input("Female Population", 0, 10_000_000, int(_default("female_population", 250000)), step=10000)
+                households = st.number_input("Households", 0, 10_000_000, int(_default("households", 100000, 0, 10_000_000)), step=5000)
+                male_population = st.number_input("Male Population", 0, 20_000_000, int(_default("male_population", 250000, 0, 20_000_000)), step=10000)
+                female_population = st.number_input("Female Population", 0, 20_000_000, int(_default("female_population", 250000, 0, 20_000_000)), step=10000)
             with a2:
-                urban_population = st.number_input("Urban Population", 0, 10_000_000, int(_default("urban_population", 200000)), step=10000)
-                rural_population = st.number_input("Rural Population", 0, 10_000_000, int(_default("rural_population", 300000)), step=10000)
-                children_population_0_6 = st.number_input("Children (0–6)", 0, 5_000_000, int(_default("children_population_0_6", 50000)), step=5000)
+                urban_population = st.number_input("Urban Population", 0, 20_000_000, int(_default("urban_population", 200000, 0, 20_000_000)), step=10000)
+                rural_population = st.number_input("Rural Population", 0, 20_000_000, int(_default("rural_population", 300000, 0, 20_000_000)), step=10000)
+                children_population_0_6 = st.number_input("Children (0–6)", 0, 10_000_000, int(_default("children_population_0_6", 50000, 0, 10_000_000)), step=5000)
             with a3:
-                elderly_population_60_plus = st.number_input("Elderly (60+)", 0, 5_000_000, int(_default("elderly_population_60_plus", 40000)), step=5000)
-                area_sq_km = st.number_input("Area (sq km)", 1, 50_000, int(_default("area_sq_km", 5000)), step=500)
-                population_density = st.number_input("Population Density", 1.0, 50_000.0, float(_default("population_density", 100.0)), step=50.0)
+                elderly_population_60_plus = st.number_input("Elderly (60+)", 0, 10_000_000, int(_default("elderly_population_60_plus", 40000, 0, 10_000_000)), step=5000)
+                area_sq_km = st.number_input("Area (sq km)", 1, 100_000, int(_default("area_sq_km", 5000, 1, 100_000)), step=500)
+                population_density = st.number_input("Population Density", 0.1, 100_000.0, float(_default("population_density", 100.0, 0.1, 100_000.0)), step=50.0)
 
         with st.expander("📊 Resource Health Metrics (advanced)"):
             rh1, rh2, rh3 = st.columns(3)
-            with rh1: resource_pct_available = st.slider("Resource % Available", 0.0, 1.0, float(_default("resource_pct_available", 0.65)), 0.01)
-            with rh2: resource_pct_needs_maintenance = st.slider("Resource % Needs Maintenance", 0.0, 1.0, float(_default("resource_pct_needs_maintenance", 0.03)), 0.01)
-            with rh3: resource_avg_capacity = st.number_input("Resource Avg Capacity", 0.0, 10_000.0, float(_default("resource_avg_capacity", 50.0)), step=5.0)
+            with rh1: resource_pct_available = st.slider("Resource % Available", 0.0, 1.0, float(_default("resource_pct_available", 0.65, 0.0, 1.0)), 0.01)
+            with rh2: resource_pct_needs_maintenance = st.slider("Resource % Needs Maintenance", 0.0, 1.0, float(_default("resource_pct_needs_maintenance", 0.03, 0.0, 1.0)), 0.01)
+            with rh3: resource_avg_capacity = st.number_input("Resource Avg Capacity", 0.0, 50_000.0, float(_default("resource_avg_capacity", 50.0, 0.0, 50_000.0)), step=5.0)
 
         submitted = st.form_submit_button("🔮 Predict Operational Priority", use_container_width=True, type="primary")
 
@@ -992,7 +1013,7 @@ def render_demo_mode(df, model):
 
     # Map marker for this incident
     st.markdown("##### 🗺️ Incident Location")
-    fig_map = px.scatter_mapbox(
+    fig_map = create_scatter_map(
         pd.DataFrame([demo_row]),
         lat="latitude", lon="longitude",
         color_discrete_sequence=[color],
@@ -1003,10 +1024,10 @@ def render_demo_mode(df, model):
         zoom=5,
         center={"lat": demo_row["latitude"], "lon": demo_row["longitude"]},
         height=350,
-        size_max=20,
     )
     fig_map.update_traces(marker=dict(size=18))
-    fig_map.update_layout(**PLOTLY_LAYOUT, margin=dict(l=0, r=0, t=0, b=0))
+    demo_map_layout = {**PLOTLY_LAYOUT, "margin": dict(l=0, r=0, t=0, b=0)}
+    fig_map.update_layout(**demo_map_layout)
     st.plotly_chart(fig_map, use_container_width=True)
 
 
