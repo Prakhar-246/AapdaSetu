@@ -18,7 +18,7 @@ try:
     
     # Try to parse the app.py file
     print("\nChecking app.py syntax...")
-    with open('app.py', 'r') as f:
+    with open('app.py', 'r', encoding='utf-8') as f:
         code = f.read()
     compile(code, 'app.py', 'exec')
     print("✓ app.py syntax is valid")
