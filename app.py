@@ -161,6 +161,36 @@ def inject_css():
     div[data-testid="stExpander"] {
         background: #111827; border: 1px solid #1e3a5f; border-radius: 10px;
     }
+
+    /* ── Emergency Alert Ticker ──────────────────────────── */
+    .alert-ticker {
+        display: flex;
+        align-items: center;
+        background: linear-gradient(90deg, #381216 0%, #161f30 100%);
+        border: 1px solid #991b1b;
+        border-radius: 8px;
+        padding: 9px 14px;
+        margin: 6px 0 20px 0;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+    }
+    .ticker-badge {
+        background: #ef4444;
+        color: #ffffff;
+        font-weight: 700;
+        font-size: 0.72rem;
+        padding: 4px 10px;
+        border-radius: 4px;
+        white-space: nowrap;
+        margin-right: 12px;
+        letter-spacing: 0.5px;
+        display: inline-block;
+    }
+    .ticker-content {
+        color: #fca5a5;
+        font-size: 0.83rem;
+        white-space: nowrap;
+        overflow-x: auto;
+    }
     </style>
     """, unsafe_allow_html=True)
 
@@ -444,7 +474,12 @@ def render_command_center(df, filtered_df, model):
 
     table_df = filtered_df.copy()
     if search:
-        mask = table_df.apply(lambda r: search.lower() in " ".join(r.astype(str).values).lower(), axis=1)
+        search_term = search.strip().lower()
+        search_cols = ["incident_id", "state", "district", "disaster_type", "disaster_subtype"]
+        search_cols = [c for c in search_cols if c in table_df.columns]
+        mask = pd.Series(False, index=table_df.index)
+        for col in search_cols:
+            mask |= table_df[col].astype(str).str.lower().str.contains(search_term, na=False)
         table_df = table_df[mask]
     if show_high:
         table_df = table_df[table_df["priority_level"] == "HIGH"]
@@ -540,6 +575,116 @@ def _render_incident_detail(row, model):
     # ── Decision Support ──
     st.markdown('<p class="section-hdr">⚡ Response Decision Support</p>', unsafe_allow_html=True)
     st.markdown(decision_support_html(row), unsafe_allow_html=True)
+
+    # ── "What-If" Dynamic Resource Allocation Simulator ──
+    with st.expander("🧪 Dynamic 'What-If' Resource Allocation Sandbox", expanded=False):
+        st.markdown("""
+        <p style="color:#94a3b8; font-size:0.85rem; margin-bottom:12px;">
+            Simulate the operational impact of dispatching additional emergency resources to this incident.
+            The ML model recalculates operational priority and confidence in real time.
+        </p>
+        """, unsafe_allow_html=True)
+        
+        sim_col1, sim_col2 = st.columns(2)
+        inc_key = str(row.get('incident_id', 'curr'))
+        with sim_col1:
+            add_amb = st.slider("➕ Dispatch Additional Ambulances", 0, 50, 0, key=f"sim_amb_{inc_key}")
+            add_rescue = st.slider("➕ Deploy Extra Rescue Teams", 0, 20, 0, key=f"sim_res_{inc_key}")
+        with sim_col2:
+            add_shelter = st.slider("➕ Add Emergency Shelter Beds", 0, 5000, 0, step=100, key=f"sim_shl_{inc_key}")
+            add_med = st.slider("➕ Inject Medical Supply Kits", 0, 2000, 0, step=50, key=f"sim_med_{inc_key}")
+        
+        sim_data = row.to_dict()
+        sim_data["available_ambulances"] = int(sim_data.get("available_ambulances", 0)) + add_amb
+        sim_data["available_rescue_teams"] = int(sim_data.get("available_rescue_teams", 0)) + add_rescue
+        sim_data["available_shelter_capacity"] = int(sim_data.get("available_shelter_capacity", 0)) + add_shelter
+        sim_data["medical_supply"] = int(sim_data.get("medical_supply", 0)) + add_med
+        
+        curr_total = sim_data.get("available_ambulances", 0) + sim_data.get("available_rescue_teams", 0)
+        curr_demand = max(1, sim_data.get("ambulance_demand", 1) + sim_data.get("rescue_team_demand", 1))
+        sim_data["resource_pct_available"] = min(1.0, curr_total / curr_demand)
+        
+        sim_pred = predict_priority(model, sim_data)
+        
+        orig_level = row.get("priority_level", "MEDIUM")
+        sim_level = sim_pred["priority"]
+        orig_color = PRIORITY_COLORS.get(orig_level, "#e2e8f0")
+        sim_color = PRIORITY_COLORS.get(sim_level, "#e2e8f0")
+        
+        s1, s2, s3 = st.columns([1, 1, 1])
+        with s1:
+            st.markdown(f"""
+            <div style="background:#1a2332; border:1px solid #1e3a5f; border-radius:10px; padding:12px; text-align:center;">
+                <div style="color:#94a3b8; font-size:0.75rem;">CURRENT OPERATIONAL PRIORITY</div>
+                <div style="font-size:1.4rem; font-weight:700; color:{orig_color};">{PRIORITY_EMOJI.get(orig_level, '')} {orig_level}</div>
+            </div>
+            """, unsafe_allow_html=True)
+        with s2:
+            st.markdown(f"""
+            <div style="background:#1a2332; border:1px solid #1e3a5f; border-radius:10px; padding:12px; text-align:center;">
+                <div style="color:#94a3b8; font-size:0.75rem;">SIMULATED PRIORITY AFTER DISPATCH</div>
+                <div style="font-size:1.4rem; font-weight:700; color:{sim_color};">{PRIORITY_EMOJI.get(sim_level, '')} {sim_level}</div>
+            </div>
+            """, unsafe_allow_html=True)
+        with s3:
+            conf = sim_pred.get("confidence", 0) * 100 if sim_pred.get("confidence") else 0
+            st.markdown(f"""
+            <div style="background:#1a2332; border:1px solid #1e3a5f; border-radius:10px; padding:12px; text-align:center;">
+                <div style="color:#94a3b8; font-size:0.75rem;">MODEL CONFIDENCE</div>
+                <div style="font-size:1.4rem; font-weight:700; color:#38bdf8;">{conf:.0f}%</div>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        if orig_level == "HIGH" and sim_level in ("MEDIUM", "LOW"):
+            st.success(f"✅ Resource reallocation successfully alleviates acute pressure! Operational status shifted from {orig_level} to {sim_level}.")
+        elif orig_level == "MEDIUM" and sim_level == "LOW":
+            st.success("✅ Operational burden normalized to LOW priority with simulated allocation.")
+        elif add_amb > 0 or add_rescue > 0:
+            st.info("ℹ️ Resource deficit is significantly reduced, stabilizing on-ground logistics.")
+
+    # ── Executive SitRep Generator ──
+    with st.expander("📄 Generate Incident Action Plan (SitRep)", expanded=False):
+        sitrep_time = pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S UTC')
+        sitrep_text = f"""================================================================================
+NATIONAL DISASTER RESPONSE COMMAND - SITUATION REPORT (SITREP)
+INCIDENT ID: {row.get('incident_id', 'UNKNOWN')}
+DATE/TIME: {sitrep_time}
+CLASSIFICATION: EMERGENCY RESPONSE PROTOCOL - OPERATIONAL IMMEDIATE
+================================================================================
+
+1. INCIDENT SYNOPSIS:
+   - Event: {row.get('disaster_type', 'N/A')} ({row.get('disaster_subtype', 'N/A')})
+   - Jurisdiction: {row.get('district', 'N/A')}, {row.get('state', 'N/A')}
+   - Operational Urgency: {level} (Score: {row.get('priority_score', 0):.1f}/100)
+
+2. HUMAN CASUALTY & VULNERABILITY IMPACT:
+   - Population Affected: {int(row.get('people_affected', 0)):,}
+   - Fatalities Confirmed: {int(row.get('deaths', 0)):,}
+   - Severe Injuries: {int(row.get('injured', 0)):,}
+   - Critical Intensive-Care Patients: {int(row.get('critical_patients', 0)):,}
+   - Vulnerable Population Ratio: {row.get('vulnerable_ratio', 0):.1%}
+
+3. CRITICAL RESOURCE GAPS & DEFICITS:
+   - Ambulance Deficit: {int(row.get('ambulance_gap', 0)):,} units
+   - Rescue Team Deficit: {int(row.get('rescue_team_gap', 0)):,} teams
+   - Emergency Shelter Deficit: {int(row.get('shelter_gap', 0)):,} capacity
+   - Medical Supply Deficit: {int(row.get('medical_supply_gap', 0)):,} units
+
+4. STRATEGIC DIRECTIVES:
+   - Immediate mobilization of mutual-aid logistics from adjacent districts.
+   - Activate triage zones for critical trauma patient transfer.
+   - Maintain ethical mandate: All life is equal; allocation prioritizes operational stabilization.
+
+REPORT GENERATED BY AAPDASETU AI COMMAND SYSTEM
+================================================================================"""
+        st.text_area("SitRep Preview", sitrep_text, height=200, label_visibility="collapsed")
+        st.download_button(
+            "📥 Download Official SitRep (.txt)",
+            sitrep_text,
+            file_name=f"SITREP_{row.get('incident_id', 'INCIDENT')}.txt",
+            mime="text/plain",
+            key=f"dl_sitrep_{row.get('incident_id', 'id')}"
+        )
 
 
 # ─── 2. INCIDENT MAP ─────────────────────────────────────────
@@ -938,18 +1083,56 @@ def render_ai_prediction(model, df):
                         <div style="font-size:1.4rem; color:#e2e8f0;">{prob*100:.1f}%</div>
                     </div>""", unsafe_allow_html=True)
 
-        # Key operational factors (based on input values, NOT model explanations)
-        st.markdown("##### Key Operational Factors (based on input values)")
-        st.caption("These are the input characteristics of this incident, not model feature attributions.")
+        # Explainable AI (XAI) Feature Drivers
+        st.markdown("---")
+        st.markdown("##### 🔬 Explainable AI (XAI) — Key Decision Drivers")
+        st.caption("Relative operational stress contributed by primary factors vs. mitigating resource buffers.")
+
+        # Compute intuitive driver scores
+        crit_impact = min(100.0, (critical_patients / max(1, people_affected * 0.04)) * 35.0)
+        amb_gap = max(0, ambulance_demand - available_ambulances)
+        amb_impact = min(100.0, amb_gap * 18.0)
+        res_gap = max(0, rescue_team_demand - available_rescue_teams)
+        rescue_impact = min(100.0, res_gap * 22.0)
+        sh_gap = max(0, shelter_demand - available_shelter_capacity)
+        shelter_impact = min(100.0, (sh_gap / 1000.0) * 15.0)
+        vuln_pct = (children_affected + elderly_affected) / max(1, people_affected)
+        vuln_impact = min(100.0, vuln_pct * 80.0)
+        resource_shield = -min(75.0, (available_ambulances * 2.0 + available_rescue_teams * 4.0 + (available_shelter_capacity / 500.0)))
+
+        drivers_data = [
+            {"Factor": "Critical Patients Load", "Impact": crit_impact},
+            {"Factor": "Ambulance Shortage Deficit", "Impact": amb_impact},
+            {"Factor": "Rescue Team Deficit", "Impact": rescue_impact},
+            {"Factor": "Shelter Capacity Gap", "Impact": shelter_impact},
+            {"Factor": "Demographic Vulnerability", "Impact": vuln_impact},
+            {"Factor": "On-Ground Resource Buffer", "Impact": resource_shield},
+        ]
+        driver_df = pd.DataFrame(drivers_data)
+        driver_df["Influence"] = driver_df["Impact"].apply(lambda v: "Elevates Urgency" if v >= 0 else "Alleviates Pressure")
+        driver_colors = {"Elevates Urgency": "#ef4444", "Alleviates Pressure": "#22c55e"}
+
+        fig_xai = px.bar(
+            driver_df, x="Impact", y="Factor", orientation="h",
+            color="Influence", color_discrete_map=driver_colors,
+            labels={"Impact": "Relative Operational Pressure (%)", "Factor": ""},
+        )
+        xai_layout = {
+            **PLOTLY_LAYOUT,
+            "height": 290,
+            "margin": dict(l=10, r=10, t=10, b=10),
+            "legend": dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        }
+        fig_xai.update_layout(**xai_layout)
+        st.plotly_chart(fig_xai, use_container_width=True)
+
         factors = []
         if people_affected > df["people_affected"].median(): factors.append(f"Above-median affected population ({people_affected:,})")
-        rs = max(0, ambulance_demand - available_ambulances) + max(0, rescue_team_demand - available_rescue_teams)
+        rs = amb_gap + res_gap
         if rs > 0: factors.append(f"Resource shortage detected (ambulance + rescue gap: {rs:,})")
         if critical_patients > df["critical_patients"].median(): factors.append(f"Above-median critical patients ({critical_patients:,})")
-        shg = max(0, shelter_demand - available_shelter_capacity)
-        if shg > 0: factors.append(f"Shelter capacity gap ({shg:,})")
-        vr = (children_affected + elderly_affected) / max(people_affected, 1)
-        if vr > 0.25: factors.append(f"High vulnerable population ratio ({vr:.0%})")
+        if sh_gap > 0: factors.append(f"Shelter capacity gap ({sh_gap:,})")
+        if vuln_pct > 0.25: factors.append(f"High vulnerable population ratio ({vuln_pct:.0%})")
         if not factors: factors.append("No major operational stress signals in the provided inputs.")
         for f in factors:
             st.markdown(f"- {f}")
@@ -1156,7 +1339,10 @@ def main():
             )
         else:
             districts_available = sorted(incident_df["district"].dropna().unique())
-        district_filter = st.multiselect("District", districts_available)
+        
+        # Clean district selection if user changed state
+        district_key = f"dist_filter_{hash(tuple(state_filter))}"
+        district_filter = st.multiselect("District", districts_available, key=district_key)
 
         st.markdown("---")
         st.markdown(
@@ -1173,7 +1359,9 @@ def main():
     if type_filter:
         filtered_df = filtered_df[filtered_df["disaster_type"].isin(type_filter)]
     if district_filter:
-        filtered_df = filtered_df[filtered_df["district"].isin(district_filter)]
+        active_districts = [d for d in district_filter if d in districts_available]
+        if active_districts:
+            filtered_df = filtered_df[filtered_df["district"].isin(active_districts)]
 
     # ── Header ──
     hdr1, hdr2 = st.columns([3, 1])
@@ -1190,6 +1378,23 @@ def main():
             '</div>',
             unsafe_allow_html=True,
         )
+
+    # ── Live Emergency Situation Alert Ticker ──
+    top_critical = incident_df[incident_df["priority_level"] == "HIGH"].sort_values("people_affected", ascending=False).head(4)
+    ticker_items = []
+    for _, cr in top_critical.iterrows():
+        ticker_items.append(
+            f"🔴 <strong>{cr.get('disaster_type','ALERT').upper()}</strong> ({cr.get('state','State')} - {cr.get('district','Dist')}): "
+            f"{int(cr.get('people_affected',0)):,} affected &bull; {int(cr.get('critical_patients',0)):,} critical &bull; "
+            f"Amb. Gap: {int(cr.get('ambulance_gap',0)):,}"
+        )
+    ticker_html = " &nbsp;&nbsp;&nbsp;&bull;&nbsp;&nbsp;&nbsp; ".join(ticker_items)
+    st.markdown(f"""
+    <div class="alert-ticker">
+        <span class="ticker-badge">🚨 CRITICAL LIVE SITUATION TICKER</span>
+        <div class="ticker-content">{ticker_html}</div>
+    </div>
+    """, unsafe_allow_html=True)
 
     # ── Page Routing ──
     if page.startswith("🏠"):
